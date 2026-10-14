@@ -1,7 +1,7 @@
-"""Автоматическое переключение раскладки клавиатуры на латиницу или кириллицу.
+"""Переключение раскладки клавиатуры на латиницу или кириллицу.
 
 Работает на macOS через системный API Text Input Sources (Carbon) без сторонних
-библиотек. На других системах switch_to() ничего не делает.
+библиотек. На других системах ничего не делает.
 """
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ import sys
 import unicodedata
 from typing import Optional
 
-LATIN = "LATIN"
-CYRILLIC = "CYRILLIC"
+from cards.application.ports import Script
 
 # Клавиши A, S, D, Q, W: по символам, которые они печатают, определяем алфавит раскладки
 _PROBE_KEYCODES = (0, 1, 2, 12, 13)
@@ -64,8 +63,8 @@ class _MacInputSources:
         # Раскладка, которой человек пользовался в поле каждого вида
         # (алфавит + язык): если для французских слов он сам выбрал
         # французскую раскладку, а не ABC, возвращаемся именно на неё.
-        self._remembered: dict[tuple[str, Optional[str]], str] = {}
-        self._slot: Optional[tuple[str, Optional[str]]] = None
+        self._remembered: dict[tuple[Script, Optional[str]], str] = {}
+        self._slot: Optional[tuple[Script, Optional[str]]] = None
 
     def _string(self, cf_string: int) -> str:
         buffer = ctypes.create_string_buffer(256)
@@ -82,7 +81,7 @@ class _MacInputSources:
             return None
         return self._string(self._item(languages, 0))
 
-    def _script(self, source: int) -> Optional[str]:
+    def _script(self, source: int) -> Optional[Script]:
         data = self._property(source, self._k_layout_data)
         if not data:  # не обычная раскладка, а метод ввода (японский и т.п.)
             return None
@@ -98,19 +97,19 @@ class _MacInputSources:
             if status != 0 or length.value == 0:
                 continue
             name = unicodedata.name(chr(chars[0]), "")
-            for script in (LATIN, CYRILLIC):
-                if name.startswith(script):
+            for script in Script:
+                if name.startswith(script.value):
                     return script
         return None
 
-    def current(self) -> tuple[str, Optional[str]]:
+    def current(self) -> tuple[str, Optional[Script]]:
         source = self._current()
         try:
             return self._source_id(source), self._script(source)
         finally:
             self._release(source)
 
-    def switch_to(self, script: str, language: Optional[str] = None) -> None:
+    def switch_to(self, script: Script, language: Optional[str] = None) -> None:
         current_id, current_script = self.current()
         # Запоминаем, на какой раскладке человек печатал в предыдущем поле
         if self._slot is not None and current_script == self._slot[0]:
@@ -151,22 +150,21 @@ class _MacInputSources:
             self._release(sources)
 
 
-_backend: Optional[_MacInputSources] = None
-_backend_failed = False
+class SystemKeyboardLayouts:
+    """Реализация порта KeyboardLayouts: на macOS переключает раскладку, на других
+    системах (или если системный API недоступен) молча ничего не делает."""
 
+    def __init__(self) -> None:
+        self._backend: Optional[_MacInputSources] = None
+        self._failed = sys.platform != "darwin"
 
-def switch_to(script: str, language: Optional[str] = None) -> None:
-    """Переключить раскладку на LATIN или CYRILLIC, если такая раскладка включена в системе.
-
-    language (en, fr...) — если для этого языка есть своя раскладка, выбрать её.
-    """
-    global _backend, _backend_failed
-    if sys.platform != "darwin" or _backend_failed:
-        return
-    try:
-        if _backend is None:
-            _backend = _MacInputSources()
-        _backend.switch_to(script, language)
-    except (OSError, AttributeError, ValueError):
-        # Нет нужного системного API — просто работаем без автопереключения
-        _backend_failed = True
+    def switch_to(self, script: Script, language: Optional[str] = None) -> None:
+        if self._failed:
+            return
+        try:
+            if self._backend is None:
+                self._backend = _MacInputSources()
+            self._backend.switch_to(script, language)
+        except (OSError, AttributeError, ValueError):
+            # Нет нужного системного API — просто работаем без автопереключения
+            self._failed = True
