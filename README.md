@@ -1,1 +1,2 @@
 # johnny-mnemonic
+vibe coding
